@@ -248,6 +248,8 @@ def init_selenium(account_id: str, proxy: str = None):
         ops.add_experimental_option("detach", True)
     
     ops.add_argument("--window-size=1920,1080")
+    # 默认 normal 策略要等全部资源加载完，境外网络下慢资源挂起会让 driver.get 长时间阻塞
+    ops.page_load_strategy = "eager"
     
     if linux:
         ops.add_argument("--headless")
@@ -261,10 +263,13 @@ def init_selenium(account_id: str, proxy: str = None):
             logger.info("使用 Selenium Manager 自动管理 ChromeDriver")
             service = Service()
         
-        return webdriver.Chrome(service=service, options=ops)
     else:
         service = Service()
-        return webdriver.Chrome(service=service, options=ops)
+
+    driver = webdriver.Chrome(service=service, options=ops)
+    # 超过该时长未完成加载则抛出可捕获的 TimeoutException，而不是等到客户端 120s 读超时崩溃
+    driver.set_page_load_timeout(60)
+    return driver
 
 def dismiss_modal_confirm(driver, timeout):
     modules = import_selenium_modules()
@@ -363,7 +368,7 @@ def load_cookies(driver, account_id):
         with open(cookie_path, 'r', encoding='utf-8') as f:
             cookies = json.load(f)
         
-        driver.get("https://app.rainyun.com/")
+        safe_get(driver, "https://app.rainyun.com/")
         time.sleep(1)
         
         for cookie in cookies:
@@ -492,6 +497,19 @@ def get_url_from_style(style):
     import re
     return re.search(r'url\(["\']?(.*?)["\']?\)', style).group(1)
 
+def safe_get(driver, url, timeout=60):
+    modules = import_selenium_modules()
+    TimeoutException = modules['TimeoutException']
+
+    try:
+        driver.get(url)
+    except TimeoutException:
+        logger.warning(f"页面加载超时({timeout}s)，停止剩余加载并继续: {url}")
+        try:
+            driver.execute_script("window.stop();")
+        except Exception:
+            pass
+
 def run_checkin(account_user=None, account_pwd=None):
     modules = import_selenium_modules()
     webdriver = modules['webdriver']
@@ -532,7 +550,7 @@ def run_checkin(account_user=None, account_pwd=None):
         
         load_cookies(driver, current_user)
         logger_adapter.info("正在跳转积分页...")
-        driver.get("https://app.rainyun.com/account/reward/earn")
+        safe_get(driver, "https://app.rainyun.com/account/reward/earn")
         time.sleep(3)
         
         if "/auth/login" in driver.current_url:
@@ -569,7 +587,7 @@ def run_checkin(account_user=None, account_pwd=None):
             if "/dashboard" in driver.current_url or "/account" in driver.current_url:
                 logger_adapter.info("登录成功！")
                 save_cookies(driver, current_user)
-                driver.get("https://app.rainyun.com/account/reward/earn")
+                safe_get(driver, "https://app.rainyun.com/account/reward/earn")
                 time.sleep(2)
             else:
                 logger_adapter.error(f"登录失败，当前页面: {driver.current_url}")
@@ -582,7 +600,7 @@ def run_checkin(account_user=None, account_pwd=None):
             logger_adapter.info("Cookie 有效，免密登录成功！")
         
         if "/account/reward/earn" not in driver.current_url:
-            driver.get("https://app.rainyun.com/account/reward/earn")
+            safe_get(driver, "https://app.rainyun.com/account/reward/earn")
 
         driver.implicitly_wait(5)
         time.sleep(1)
